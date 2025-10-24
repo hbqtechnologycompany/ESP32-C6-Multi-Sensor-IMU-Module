@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include <string.h>
 
 static const char *TAG = "IMU_MANAGER";
 
@@ -164,6 +165,7 @@ esp_err_t imu_manager_read_all(imu_data_t *data)
         return ESP_ERR_TIMEOUT;
     }
     
+    memset(data, 0, sizeof(*data));
     // Set timestamp
     data->timestamp_us = esp_timer_get_time();
     
@@ -256,15 +258,19 @@ esp_err_t imu_manager_read_imu_6axis(imu_data_t *data)
         // Convert raw data to engineering units
         // Assuming 16-bit data and ±16g range for accel, ±2000dps for gyro
         const float accel_scale = 16.0f / 32768.0f;  // ±16g
-        const float gyro_scale = 2000.0f / 32768.0f; // ±2000dps
+        const float gyro_scale_dps = 2000.0f / 32768.0f; // ±2000 dps
+        const float deg_to_rad = (float)(3.14159265358979323846 / 180.0);
         
         data->imu_6axis.accel_x_g = sensor_data.accel_data[0] * accel_scale;
         data->imu_6axis.accel_y_g = sensor_data.accel_data[1] * accel_scale;
         data->imu_6axis.accel_z_g = sensor_data.accel_data[2] * accel_scale;
         
-        data->imu_6axis.gyro_x_dps = sensor_data.gyro_data[0] * gyro_scale;
-        data->imu_6axis.gyro_y_dps = sensor_data.gyro_data[1] * gyro_scale;
-        data->imu_6axis.gyro_z_dps = sensor_data.gyro_data[2] * gyro_scale;
+        data->imu_6axis.gyro_x_dps = sensor_data.gyro_data[0] * gyro_scale_dps;
+        data->imu_6axis.gyro_y_dps = sensor_data.gyro_data[1] * gyro_scale_dps;
+        data->imu_6axis.gyro_z_dps = sensor_data.gyro_data[2] * gyro_scale_dps;
+        data->imu_6axis.gyro_x_rad = data->imu_6axis.gyro_x_dps * deg_to_rad;
+        data->imu_6axis.gyro_y_rad = data->imu_6axis.gyro_y_dps * deg_to_rad;
+        data->imu_6axis.gyro_z_rad = data->imu_6axis.gyro_z_dps * deg_to_rad;
         
         // Temperature conversion (assuming 8-bit temp)
         data->imu_6axis.temperature_c = sensor_data.temp_data + 25.0f;

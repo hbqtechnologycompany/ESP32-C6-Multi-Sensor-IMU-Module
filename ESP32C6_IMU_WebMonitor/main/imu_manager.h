@@ -34,6 +34,9 @@ typedef struct {
         float gyro_x_dps;
         float gyro_y_dps;
         float gyro_z_dps;
+        float gyro_x_rad;
+        float gyro_y_rad;
+        float gyro_z_rad;
         float temperature_c;
         bool valid;
     } imu_6axis;

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ESP32-C6 IMU Monitor</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="dashboard">
+    <section class="chart-grid" id="charts">
+      <div class="chart-box" id="chart-mag">
+        <h3>IIS2MDC Magnetometer (mG)</h3>
+        <canvas></canvas>
+      </div>
+      <div class="chart-box" id="chart-icm-gyro">
+        <h3>ICM45686 Gyroscope Rate (rad/s)</h3>
+        <canvas></canvas>
+      </div>
+      <div class="chart-box" id="chart-scl">
+        <h3>SCL3300 Inclinometer (deg)</h3>
+        <canvas></canvas>
+      </div>
+      <div class="chart-box" id="chart-icm-accel">
+        <h3>ICM45686 Tilt (deg)</h3>
+        <canvas></canvas>
+      </div>
+      <div class="chart-box" id="chart-iis3-g">
+        <h3>IIS3DWB Acceleration (g)</h3>
+        <canvas></canvas>
+      </div>
+      <div class="chart-box" id="chart-iis3-ms2">
+        <h3>IIS3DWB Acceleration (m/s²)</h3>
+        <canvas></canvas>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <header class="page-header">
+        <h1>ESP32-C6 IMU Monitor</h1>
+        <div class="status" id="status">
+          <button class="pause-button" id="pauseButton" type="button">Pause</button>
+          <div class="status-line">
+            <span id="statusText">Connecting...</span>
+            <span class="status-ip" id="statusIp">-</span>
+          </div>
+        </div>
+      </header>
+      <section class="toolbar">
+        <div class="metrics" id="metricsRow">
+          <div class="metric">
+            <span class="label">Messages</span>
+            <span class="value" id="metricMsg">0</span>
+          </div>
+          <div class="metric">
+            <span class="label">Active Sensors</span>
+            <span class="value" id="metricSensors">0</span>
+          </div>
+          <div class="metric">
+            <span class="label">msg/s</span>
+            <span class="value" id="metricMsgRate">0</span>
+          </div>
+        </div>
+      </section>
+      <h3>Event Log</h3>
+      <div class="log" id="log"></div>
+    </aside>
+  </main>
+</body>
+</html>

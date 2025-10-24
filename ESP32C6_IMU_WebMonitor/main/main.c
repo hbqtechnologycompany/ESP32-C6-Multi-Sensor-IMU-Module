@@ -17,6 +17,9 @@
 #include "imu_manager.h"
 #include "data_buffer.h"
 #include "led_status.h"
+#include "ble_stream.h"
+#include "imu_ble.h"
+#include "udp.h"
 
 static const char *TAG = "MAIN";
 
@@ -35,9 +38,9 @@ static const char *TAG = "MAIN";
 #define DATA_PROCESSOR_PRIORITY     3
 
 // Task stack sizes
-#define IMU_TASK_STACK_SIZE         8192
-#define WEB_SERVER_TASK_STACK_SIZE  4096
-#define DATA_PROCESSOR_STACK_SIZE   4096
+#define IMU_TASK_STACK_SIZE             8192
+#define WEB_SERVER_TASK_STACK_SIZE      4096
+#define UDP_BROADCAST_TASK_STACK_SIZE   2048
 
 static int s_retry_num = 0;
 static EventGroupHandle_t s_wifi_event_group;
@@ -165,7 +168,7 @@ static void imu_task(void *pvParameters)
     
     imu_data_t sensor_data;
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t frequency = pdMS_TO_TICKS(50); // 10Hz sampling (reduced from 100Hz to avoid watchdog)
+    const TickType_t frequency = pdMS_TO_TICKS(20); // 100Hz sampling
     uint32_t read_count = 0;
     
     while (1) {
@@ -185,42 +188,13 @@ static void imu_task(void *pvParameters)
             }
         } else {
             ESP_LOGW(TAG, "Failed to read IMU data");
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
         
         // Maintain precise timing
         vTaskDelayUntil(&last_wake_time, frequency);
     }
 }
-
-// Data processing task
-static void data_processor_task(void *pvParameters)
-{
-    ESP_LOGI(TAG, "Data processor task started");
-    
-    imu_data_t data;
-    uint32_t processed_count = 0;
-    
-    while (1) {
-        // Process data from buffer (use get_latest to not consume/delete data)
-        // This allows ws_broadcast_task to also read the same data
-        if (data_buffer_get_latest(&data) == ESP_OK) {
-            // Calculate statistics, apply filters, etc.
-            processed_count++;
-            
-            // Log statistics every 1000 samples
-            if (processed_count % 1000 == 0) {
-                ESP_LOGI(TAG, "Processed %lu samples", processed_count);
-            }
-        } else {
-            // Buffer empty, wait longer to avoid busy-waiting
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-        
-        // Always yield to other tasks
-        vTaskDelay(pdMS_TO_TICKS(100)); // Process at 10Hz, same as IMU sampling rate
-    }
-}
-
 // Web server task
 static void web_server_task(void *pvParameters)
 {
@@ -280,22 +254,35 @@ void app_main(void)
     
     // Initialize data buffer
     data_buffer_init();
-    
+
+    // Initialize BLE streaming before bringing up Wi-Fi
+    imu_ble_config_t ble_cfg = {
+        .enable_iis2mdc = true,
+        .enable_iis3dwb = true,
+        .enable_icm45686 = true,
+        .enable_scl3300 = true,
+        .iis3dwb_odr_hz = 800,
+        .icm45686_odr_hz = 400,
+        .packet_interval_ms = 20
+    };
+    ESP_ERROR_CHECK(ble_stream_init());
+    ESP_ERROR_CHECK(imu_ble_init(&ble_cfg));
+    ESP_ERROR_CHECK(ble_stream_start());
+
     // Connect to WiFi
     wifi_init_sta();
     
     // Create tasks
     // ESP32-C6 is single-core, use core 0 or tskNO_AFFINITY
-    xTaskCreatePinnedToCore(imu_task, "imu_task", IMU_TASK_STACK_SIZE, 
-                           NULL, IMU_TASK_PRIORITY, NULL, 0);
+    xTaskCreate(imu_task, "imu_task", IMU_TASK_STACK_SIZE, 
+                           NULL, IMU_TASK_PRIORITY, NULL);
     
-    xTaskCreatePinnedToCore(data_processor_task, "data_processor", 
-                           DATA_PROCESSOR_STACK_SIZE, NULL, 
-                           DATA_PROCESSOR_PRIORITY, NULL, 0);
-    
-    xTaskCreatePinnedToCore(web_server_task, "web_server", 
+    xTaskCreate(web_server_task, "web_server", 
                            WEB_SERVER_TASK_STACK_SIZE, NULL, 
-                           WEB_SERVER_TASK_PRIORITY, NULL, 0);
+                           WEB_SERVER_TASK_PRIORITY, NULL);
+
+    xTaskCreate(udp_broadcast_task, "udp_broadcast_task", UDP_BROADCAST_TASK_STACK_SIZE, 
+        NULL, 5, NULL);
     
     ESP_LOGI(TAG, "All tasks created successfully");
     

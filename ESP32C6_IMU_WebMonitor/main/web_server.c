@@ -9,6 +9,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+#include <stdarg.h>
 #include "esp_timer.h"
 
 static const char *TAG = "WEB_SERVER";
@@ -25,6 +27,36 @@ typedef struct {
 static ws_connection_t ws_connections[WEBSOCKET_MAX_CONNECTIONS];
 static SemaphoreHandle_t ws_mutex = NULL;
 
+// Embedded files
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[] asm("_binary_index_html_end");
+extern const uint8_t styles_css_start[] asm("_binary_styles_css_start");
+extern const uint8_t styles_css_end[] asm("_binary_styles_css_end");
+extern const uint8_t app_js_start[] asm("_binary_app_js_start");
+extern const uint8_t app_js_end[] asm("_binary_app_js_end");
+
+static bool json_append(char *buf, size_t buf_size, int *offset, const char *fmt, ...)
+{
+    if (*offset < 0 || (size_t)*offset >= buf_size) {
+        return false;
+    }
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(buf + *offset, buf_size - (size_t)*offset, fmt, args);
+    va_end(args);
+    if (written < 0) {
+        return false;
+    }
+    if ((size_t)written >= buf_size - (size_t)*offset) {
+        *offset = (int)(buf_size - 1);
+        buf[buf_size - 1] = '\0';
+        return false;
+    }
+    *offset += written;
+    return true;
+}
+
+
 // Forward declarations
 static esp_err_t api_data_handler(httpd_req_t *req);
 static esp_err_t api_stats_handler(httpd_req_t *req);
@@ -37,6 +69,8 @@ static void ws_unregister_connection(int fd);
 static esp_err_t ws_send_to_all(const char *data, size_t len);
 static void ws_broadcast_task(void *arg);
 static esp_err_t root_handler(httpd_req_t *req);
+static esp_err_t styles_handler(httpd_req_t *req);
+static esp_err_t app_script_handler(httpd_req_t *req);
 // API IP endpoint - returns current IP address as JSON
 static esp_err_t api_ip_handler(httpd_req_t *req)
 {
@@ -440,6 +474,34 @@ static esp_err_t file_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// Serve embedded assets that are linked into the binary
+static esp_err_t send_embedded_asset(httpd_req_t *req,
+                                     const uint8_t *start,
+                                     const uint8_t *end,
+                                     const char *content_type)
+{
+    const size_t length = (size_t)(end - start);
+    if (length == 0) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Asset missing", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, content_type);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    return httpd_resp_send(req, (const char *)start, length);
+}
+
+static esp_err_t styles_handler(httpd_req_t *req)
+{
+    return send_embedded_asset(req, styles_css_start, styles_css_end, "text/css");
+}
+
+static esp_err_t app_script_handler(httpd_req_t *req)
+{
+    return send_embedded_asset(req, app_js_start, app_js_end, "application/javascript");
+}
+
 // WebSocket connection management
 static void ws_register_connection(int fd)
 {
@@ -624,7 +686,23 @@ esp_err_t web_server_start(void)
         };
         httpd_register_uri_handler(server, &ws_data_uri);
         
-        // Root handler serves an embedded dashboard when SPIFFS is not populated
+        httpd_uri_t styles_uri = {
+            .uri = "/styles.css",
+            .method = HTTP_GET,
+            .handler = styles_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &styles_uri);
+
+        httpd_uri_t app_js_uri = {
+            .uri = "/app.js",
+            .method = HTTP_GET,
+            .handler = app_script_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &app_js_uri);
+
+        // Root handler serves the embedded dashboard
         httpd_uri_t root_uri = {
             .uri = "/",
             .method = HTTP_GET,
@@ -692,7 +770,8 @@ esp_err_t web_server_enable_sensor(uint8_t sensor_id, bool enable)
 static void ws_broadcast_task(void *arg)
 {
     (void)arg;
-    char json[768];
+    char json[1024];
+    static uint64_t last_sent_timestamp_us = 0;
     uint32_t send_count = 0;
     uint32_t no_data_count = 0;
     uint64_t rate_window_start_us = 0;
@@ -707,29 +786,47 @@ static void ws_broadcast_task(void *arg)
             // LED ON - bắt đầu gửi dữ liệu
             led_status_data_pulse_start();
             
-            uint64_t now_us = (d.timestamp_us != 0) ? d.timestamp_us : esp_timer_get_time();
-            if (rate_window_start_us == 0 || now_us <= rate_window_start_us) {
-                rate_window_start_us = now_us;
+            uint64_t sample_ts = (d.timestamp_us != 0) ? d.timestamp_us : esp_timer_get_time();
+            if (sample_ts == last_sent_timestamp_us) {
+                vTaskDelay(pdMS_TO_TICKS(5));
+                continue;
+            }
+            last_sent_timestamp_us = sample_ts;
+
+            if (rate_window_start_us == 0 || sample_ts <= rate_window_start_us) {
+                rate_window_start_us = sample_ts;
                 rate_window_msgs = 0;
             }
             rate_window_msgs++;
-            uint64_t elapsed_us = now_us - rate_window_start_us;
+            uint64_t elapsed_us = sample_ts - rate_window_start_us;
             float current_rate = 0.0f;
             if (elapsed_us > 0) {
                 current_rate = (rate_window_msgs * 1000000.0f) / (float)elapsed_us;
             }
             if (elapsed_us >= 1000000ULL) {
                 rate_window_msgs = 0;
-                rate_window_start_us = now_us;
+                rate_window_start_us = sample_ts;
                 last_msg_rate = current_rate;
             } else if (current_rate > 0.0f) {
                 last_msg_rate = current_rate;
             }
+
+            uint8_t sensor_mask = imu_manager_get_enabled_sensors();
+
+            int sensor_count = 0;
+            uint8_t temp_mask = sensor_mask;
+            while (temp_mask) {
+                sensor_count++;
+                temp_mask &= (uint8_t)(temp_mask - 1);
+            }
+
             // Build compact JSON manually to reduce overhead
+            bool json_ok = true;
             int n = 0;
-            n += snprintf(json + n, sizeof(json) - n, "{\"t\":%llu", (unsigned long long)d.timestamp_us);
+            json[0] = '\0';
+            json_ok &= json_append(json, sizeof(json), &n, "{\"t\":%llu", (unsigned long long)sample_ts);
             if (d.magnetometer.valid) {
-                n += snprintf(json + n, sizeof(json) - n,
+                json_ok &= json_append(json, sizeof(json), &n,
                               ",\"mag_iis2\":{\"name\":\"IIS2MDC Magnetometer\",\"unit\":\"mG\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"temperature\":%.2f}",
                               d.magnetometer.x_mg, d.magnetometer.y_mg, d.magnetometer.z_mg,
                               d.magnetometer.temperature_c);
@@ -739,32 +836,62 @@ static void ws_broadcast_task(void *arg)
                 const float ay_g = d.accelerometer.y_g;
                 const float az_g = d.accelerometer.z_g;
                 const float g_to_ms2 = 9.80665f;
-                n += snprintf(json + n, sizeof(json) - n,
+                json_ok &= json_append(json, sizeof(json), &n,
                               ",\"acc_iis3_g\":{\"name\":\"IIS3DWB Accelerometer\",\"unit\":\"g\",\"x\":%.5f,\"y\":%.5f,\"z\":%.5f}",
                               ax_g, ay_g, az_g);
-                n += snprintf(json + n, sizeof(json) - n,
+                json_ok &= json_append(json, sizeof(json), &n,
                               ",\"acc_iis3_ms2\":{\"name\":\"IIS3DWB Accelerometer\",\"unit\":\"m/s^2\",\"x\":%.5f,\"y\":%.5f,\"z\":%.5f}",
                               ax_g * g_to_ms2, ay_g * g_to_ms2, az_g * g_to_ms2);
             }
             if (d.imu_6axis.valid) {
-                n += snprintf(json + n, sizeof(json) - n,
-                              ",\"gyr_icm\":{\"name\":\"ICM45686 Gyroscope\",\"unit\":\"deg/s\",\"x\":%.4f,\"y\":%.4f,\"z\":%.4f}",
-                              d.imu_6axis.gyro_x_dps, d.imu_6axis.gyro_y_dps, d.imu_6axis.gyro_z_dps);
+                const float ax = d.imu_6axis.accel_x_g;
+                const float ay = d.imu_6axis.accel_y_g;
+                const float az = d.imu_6axis.accel_z_g;
+                const float rad_to_deg = 57.29577951308232f;
+                float tilt_x_deg = 0.0f;
+                float tilt_y_deg = 0.0f;
+                float tilt_z_deg = 0.0f;
+                float denom_x = sqrtf(ay * ay + az * az);
+                float denom_y = sqrtf(ax * ax + az * az);
+                float denom_z = sqrtf(ax * ax + ay * ay);
+                if (denom_x > 1e-6f) {
+                    tilt_x_deg = atan2f(ax, denom_x) * rad_to_deg;
+                }
+                if (denom_y > 1e-6f) {
+                    tilt_y_deg = atan2f(ay, denom_y) * rad_to_deg;
+                }
+                if (denom_z > 1e-6f) {
+                    tilt_z_deg = atan2f(az, denom_z) * rad_to_deg;
+                }
+
+                json_ok &= json_append(json, sizeof(json), &n,
+                              ",\"acc_icm\":{\"name\":\"ICM45686 Tilt\",\"unit\":\"deg\",\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"temperature\":%.2f}",
+                              tilt_x_deg, tilt_y_deg, tilt_z_deg, d.imu_6axis.temperature_c);
+
+                json_ok &= json_append(json, sizeof(json), &n,
+                              ",\"gyr_icm_rate\":{\"name\":\"ICM45686 Gyroscope Rate\",\"unit\":\"rad/s\",\"x\":%.5f,\"y\":%.5f,\"z\":%.5f}",
+                              d.imu_6axis.gyro_x_rad, d.imu_6axis.gyro_y_rad, d.imu_6axis.gyro_z_rad);
             }
+
             if (d.inclinometer.valid) {
-                n += snprintf(json + n, sizeof(json) - n,
+                json_ok &= json_append(json, sizeof(json), &n,
                               ",\"inc_scl\":{\"name\":\"SCL3300 Inclinometer\",\"unit\":\"deg\",\"angle_x\":%.2f,\"angle_y\":%.2f,\"angle_z\":%.2f,\"temperature\":%.2f}",
                               d.inclinometer.angle_x_deg, d.inclinometer.angle_y_deg, d.inclinometer.angle_z_deg,
                               d.inclinometer.temperature_c);
             }
-            n += snprintf(json + n, sizeof(json) - n,
-                          ",\"statistics\":{\"msg_per_second\":%.2f}}",
-                          last_msg_rate);
+            json_ok &= json_append(json, sizeof(json), &n,
+                          ",\"statistics\":{\"msg_per_second\":%.2f,\"sensor_mask\":%u,\"sensor_count\":%d}}",
+                          last_msg_rate, (unsigned int)sensor_mask, sensor_count);
+            if (!json_ok) {
+                ESP_LOGW(TAG, "JSON payload truncated, skipping frame");
+                led_status_data_pulse_end();
+                continue;
+            }
             ws_send_to_all(json, n);
             send_count++;
             
             // LED OFF - gửi xong dữ liệu
-            led_status_data_pulse_end();
+            led_status_data_pulse_end();    
             
             // Log every 100 sends
             if (send_count % 100 == 0) {
@@ -776,151 +903,13 @@ static void ws_broadcast_task(void *arg)
                 ESP_LOGW(TAG, "No data available in buffer (count: %lu)", no_data_count);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(20)); // ~50 Hz
+        vTaskDelay(pdMS_TO_TICKS(10)); // ~100 Hz
     }
 }
 
-// Simple embedded HTML dashboard (served at "/")
+// Root handler serves embedded dashboard assets
 static esp_err_t root_handler(httpd_req_t *req)
 {
-    // Get IP address
-    char ip_str[32] = "0.0.0.0";
-    esp_netif_ip_info_t ip_info;
-    esp_netif_t *netif = esp_netif_get_default_netif();
-    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-        snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d",
-            esp_ip4_addr1(&ip_info.ip), esp_ip4_addr2(&ip_info.ip), 
-            esp_ip4_addr3(&ip_info.ip), esp_ip4_addr4(&ip_info.ip));
-    }
-    
-    ESP_LOGI(TAG, "Root handler - ESP32 IP: %s", ip_str);
-    
-    // Log thêm để xác nhận địa chỉ IP
-    ESP_LOGW(TAG, "### INJECTING IP: '%s' INTO HTML ###", ip_str);
-    
-    // HTML - part 1 (before IP injection)
-    static const char *html_part1 =
-        "<!DOCTYPE html>"
-        "<html><head><meta charset='utf-8'><title>ESP32-C6 IMU Monitor</title>"
-        "<script src='https://cdn.jsdelivr.net/npm/chart.js@4'></script>"
-        "<style>"
-        "body{font-family:Arial,Helvetica,sans-serif;margin:20px;background:#f8fafc;color:#1e293b}"
-        "h2{color:#0369a1;margin-bottom:12px}"
-        ".status{padding:12px;border-left:4px solid #10b981;background:#fff;margin:12px 0;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.1);display:flex;justify-content:space-between;align-items:center;}"
-        ".status-ip{font-size:14px;color:#64748b;margin-left:auto;text-align:right;font-weight:bold;min-width:100px;}"
-        ".metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:20px 0}"
-        ".metric{background:#fff;padding:12px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.08)}"
-        ".metric .label{display:block;font-size:12px;text-transform:uppercase;color:#64748b;letter-spacing:0.05em}"
-        ".metric .value{display:block;font-size:20px;font-weight:600;margin-top:6px;color:#0f172a;}"
-        ".chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin:18px 0}"
-        ".chart-box{background:#fff;padding:12px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}"
-        ".chart-box h3{margin:0 0 10px 0;color:#0284c7;font-size:15px}"
-        "canvas{width:100%!important;height:220px!important;background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px}"
-        ".log{background:#fff;padding:12px;height:160px;overflow:auto;border:1px solid #e2e8f0;border-radius:6px;font-family:monospace;font-size:11px;color:#475569}"
-        "</style></head><body>"
-        "<h2>ESP32-C6 IMU Monitor (IP: ";
-    
-    // HTML - ip part (inject IP directly into HTML tag)
-    static const char *html_ip_part = ")</h2>"
-        "<div class='status' id='status'><span id='statusText'>Connecting...</span><span class='status-ip' id='statusIp'></span></div>"
-        "<div class='metrics'>"
-        "  <div class='metric'><span class='label'>Messages</span><span class='value' id='metricMsg'>0</span></div>"
-        "  <div class='metric'><span class='label'>Active Sensors</span><span class='value' id='metricSensors'>0</span></div>"
-        "  <div class='metric'><span class='label'>msg/s</span><span class='value' id='metricMsgRate'>0</span></div>"
-        "</div>"
-        "<div class='chart-grid' id='charts'></div>"
-        "<h3 style='color:#0284c7;margin-top:24px;'>Event Log</h3>"
-        "<div class='log' id='log'></div>"
-        "<script>"
-        "const ESP32_IP='";
-    
-    // HTML - part 2 (after IP injection)
-    static const char *html_part2 =
-        "';"
-        "(()=>{"
-        "  const statusEl=document.getElementById('status');"
-        "  const statusText=document.getElementById('statusText');"
-        "  const statusIp=document.getElementById('statusIp');"
-        "  statusIp.textContent=ESP32_IP;"
-        "  statusIp.style.display='inline-block';"
-        "  console.log('ESP32 IP set to:', ESP32_IP);"
-        "  document.title = 'ESP32-C6 - ' + ESP32_IP;"
-        "  const logEl=document.getElementById('log');"
-        "  const chartsContainer=document.getElementById('charts');"
-        "  const metrics={"
-        "    msg:document.getElementById('metricMsg'),"
-        "    sensors:document.getElementById('metricSensors'),"
-        "    msgRate:document.getElementById('metricMsgRate')"
-        "  };"
-        "  const chartCfg={type:'line',options:{responsive:true,maintainAspectRatio:false,animation:false,scales:{x:{display:false},y:{beginAtZero:false,grid:{color:'rgba(226,232,240,0.9)'}}}}};"
-        "  const defaultColors=['#ef4444','#10b981','#3b82f6','#f97316'];"
-        "  const chartDefs={"
-        "    mag_iis2:{title:'IIS2MDC Magnetometer (mG)',labels:['X','Y','Z'],colors:['#dc2626','#16a34a','#1d4ed8']},"
-        "    acc_iis3_g:{title:'IIS3DWB Accelerometer (g)',labels:['X','Y','Z'],colors:['#b91c1c','#047857','#7c3aed']},"
-        "    acc_iis3_ms2:{title:'IIS3DWB Accelerometer (m/s²)',labels:['X','Y','Z'],colors:['#d97706','#22c55e','#2563eb']},"
-        "    gyr_icm:{title:'ICM45686 Gyroscope (deg/s)',labels:['X','Y','Z'],colors:['#f59e0b','#8b5cf6','#0ea5e9']},"
-        "    inc_scl:{title:'SCL3300 Inclinometer (deg)',labels:['Angle X','Angle Y','Angle Z'],colors:['#e67e22','#3b82f6','#1e293b']}"
-        "  };"
-        "  const charts={};"
-        "  const maxPoints=100;"
-        "  let msgCount=0;"
-        "  function addLog(msg){const t=new Date().toLocaleTimeString();logEl.innerHTML='['+t+'] '+msg+'<br>'+logEl.innerHTML;const parts=logEl.innerHTML.split('<br>');if(parts.length>200){logEl.innerHTML=parts.slice(0,200).join('<br>');}}"
-        "  function chartTitle(key,payload){if(!payload){return(chartDefs[key]&&chartDefs[key].title)||('Sensor '+key);}const base=payload.title||payload.name||(chartDefs[key]&&chartDefs[key].title)||('Sensor '+key);return payload.unit?base+' ('+payload.unit+')':base;}"
-        "  function ensureChart(key,payload){if(charts[key]){const title=chartTitle(key,payload);if(title&&charts[key].titleEl.textContent!==title){charts[key].titleEl.textContent=title;}return charts[key];}"
-        "    const def=chartDefs[key]||{};const labels=payload&&payload.labels?payload.labels:def.labels||['X','Y','Z'];const colors=(payload&&payload.colors)||def.colors||defaultColors;"
-        "    const box=document.createElement('div');box.className='chart-box';const titleEl=document.createElement('h3');titleEl.textContent=chartTitle(key,payload);box.appendChild(titleEl);const canvas=document.createElement('canvas');box.appendChild(canvas);"
-        "    chartsContainer.appendChild(box);"
-        "    const datasets=labels.map((label,idx)=>({label,data:[],borderColor:colors[idx%colors.length],borderWidth:1.8,pointRadius:0}));"
-        "    const chart=new Chart(canvas.getContext('2d'),{...chartCfg,data:{labels:[],datasets}});"
-        "    charts[key]={chart,titleEl};"
-        "    addLog('Created chart for '+titleEl.textContent);"
-        "    metrics.sensors.textContent=Object.keys(charts).length;"
-        "    return charts[key];"
-        "  }"
-        "  function pushValues(key,payload){const values=payload&&payload.values?payload.values:payload;if(!values||!values.length)return;const entry=ensureChart(key,payload);const chart=entry.chart;"
-        "    chart.data.labels.push(msgCount);chart.data.datasets.forEach((ds,idx)=>ds.data.push(values[idx]));"
-        "    if(chart.data.labels.length>maxPoints){chart.data.labels.shift();chart.data.datasets.forEach(ds=>ds.data.shift());}"
-        "    chart.update('none');"
-        "  }"
-        "  addLog('ESP32 IP: '+ESP32_IP);"
-        "  addLog('Waiting for sensor data...');"
-        "  const wsUrl=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/data';"
-        "  addLog('Connecting to '+wsUrl);"
-        "  const ws=new WebSocket(wsUrl);"
-        "  ws.onopen=()=>{"
-        "    addLog('WebSocket connected');"
-        "    statusText.textContent='Connected';"
-        "    statusEl.style.borderLeftColor='#10b981';"
-        "    statusEl.style.background='#fff';"
-        "  };"
-        "  ws.onerror=()=>{addLog('WebSocket error');statusText.textContent='Error';statusEl.style.borderLeftColor='#ef4444';statusEl.style.background='#fef2f2';};"
-        "  ws.onclose=()=>{addLog('WebSocket closed');statusText.textContent='Disconnected';statusEl.style.borderLeftColor='#f59e0b';statusEl.style.background='#fffbeb';};"
-        "  ws.onmessage=(ev)=>{"
-        "    try{"
-        "      const payload=JSON.parse(ev.data);"
-        "      if(payload.ip){statusIp.textContent=payload.ip;return;}"
-        "      msgCount++;"
-        "      metrics.msg.textContent=msgCount;"
-        "      if(payload&&payload.statistics&&payload.statistics.msg_per_second!==undefined){metrics.msgRate.textContent=payload.statistics.msg_per_second.toFixed(1);}"
-        "      if(payload.mag_iis2){pushValues('mag_iis2',{values:[payload.mag_iis2.x,payload.mag_iis2.y,payload.mag_iis2.z],name:payload.mag_iis2.name,unit:payload.mag_iis2.unit});}"
-        "      if(payload.acc_iis3_g){pushValues('acc_iis3_g',{values:[payload.acc_iis3_g.x,payload.acc_iis3_g.y,payload.acc_iis3_g.z],name:payload.acc_iis3_g.name,unit:payload.acc_iis3_g.unit});}"
-        "      if(payload.acc_iis3_ms2){pushValues('acc_iis3_ms2',{values:[payload.acc_iis3_ms2.x,payload.acc_iis3_ms2.y,payload.acc_iis3_ms2.z],name:payload.acc_iis3_ms2.name,unit:payload.acc_iis3_ms2.unit});}"
-        "      if(payload.gyr_icm){pushValues('gyr_icm',{values:[payload.gyr_icm.x,payload.gyr_icm.y,payload.gyr_icm.z],name:payload.gyr_icm.name,unit:payload.gyr_icm.unit});}"
-        "      if(payload.inc_scl){pushValues('inc_scl',{values:[payload.inc_scl.angle_x,payload.inc_scl.angle_y,payload.inc_scl.angle_z],name:payload.inc_scl.name,unit:payload.inc_scl.unit,labels:['Angle X','Angle Y','Angle Z']});}"
-        "      if(msgCount%25===0){addLog('Received '+msgCount+' messages');}"
-        "    }catch(err){addLog('Parse error: '+err.message);}"
-        "  };"
-        "})();"
-        "</script>"
-        "</body></html>";
-    
-    // Send HTML in chunks with IP injected twice (in title and as JavaScript)
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send_chunk(req, html_part1, HTTPD_RESP_USE_STRLEN);
-    httpd_resp_send_chunk(req, ip_str, HTTPD_RESP_USE_STRLEN);  // IP trong tiêu đề
-    httpd_resp_send_chunk(req, html_ip_part, HTTPD_RESP_USE_STRLEN);
-    httpd_resp_send_chunk(req, html_part2, HTTPD_RESP_USE_STRLEN); 
-    httpd_resp_send_chunk(req, NULL, 0); // End of chunks
-    
-    return ESP_OK;
+    ESP_LOGI(TAG, "Serving embedded index.html");
+    return send_embedded_asset(req, index_html_start, index_html_end, "text/html");
 }

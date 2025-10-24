@@ -23,8 +23,8 @@
 static const char *TAG = "MAIN";
 
 // WiFi credentials - change these for your network
-#define WIFI_SSID                   "LamNga"
-#define WIFI_PASS                   "quanghuu"
+#define WIFI_SSID                   "TenWifi"
+#define WIFI_PASS                   "MatkhauWifi"
 #define WIFI_MAXIMUM_RETRY          5
 
 // mDNS configuration
@@ -202,14 +202,8 @@ static void imu_task(void *pvParameters)
 
             if (sensor_data.stats.fifo_level > high_threshold && delay_ms > min_delay_ms) {
                 delay_ms--;
-                ESP_LOGD(TAG, "IMU task speeding up, delay=%ums (fifo_level=%u)",
-                         (unsigned int)delay_ms,
-                         (unsigned int)sensor_data.stats.fifo_level);
             } else if (sensor_data.stats.samples_read < low_threshold && delay_ms < max_delay_ms) {
                 delay_ms++;
-                ESP_LOGD(TAG, "IMU task slowing down, delay=%ums (samples_read=%u)",
-                         (unsigned int)delay_ms,
-                         (unsigned int)sensor_data.stats.samples_read);
             }
         }
 

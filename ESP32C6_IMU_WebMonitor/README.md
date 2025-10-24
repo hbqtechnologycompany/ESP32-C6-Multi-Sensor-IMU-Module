@@ -1,163 +1,87 @@
-# ESP32-C6 IMU Web Monitor
+# ESP32-C6 IMU Web Monitor (Wi-Fi & BLE)
 
-> [VI] Ứng dụng web giám sát IMU realtime trên ESP32‑C6. Dashboard HTML/JS tích hợp kết nối trực tiếp tới firmware. Các mục song ngữ có nhãn [VI].
+**English:** Unified Wi-Fi dashboard and BLE streamer for four IMU classes on ESP32-C6, covering web UI, REST API, and BLE notifications in a single firmware.
 
-A high-performance web-based monitoring system for multiple IMU sensors with real-time data visualization and control capabilities.
+**Tiếng Việt:** Firmware hợp nhất cho ESP32-C6 giúp giám sát IMU qua web, API REST và streaming BLE, hỗ trợ đồng thời nhiều cảm biến.
 
 ![Web UI](imgs/webui.png)
 
-## 🌟 Features
+## Features / Tính năng
 
-[VI] Tính năng
+- **Live Web Dashboard / Bảng điều khiển realtime:** WebSocket push ~50 Hz, biểu đồ Chart.js và thống kê trạng thái.
+- **Multi-Sensor Fusion / Đa cảm biến:** IIS2MDC, IIS3DWB, ICM45686, SCL3300 đọc song song, đồng bộ thời gian.
+- **BLE Notify Stream / Truyền BLE:** GATT service UUID 0x1815, characteristic 0x2A58 với frame nhị phân tương tự dự án BLE streamer.
+- **REST + Download / API & xuất dữ liệu:** `GET /api/data`, `/api/stats`, `/api/download?(csv|json)` cho tích hợp ứng dụng khác.
+- **IP Discovery / Tìm IP:** Broadcast UDP mỗi 5 s tới `255.255.255.255:12345`, kèm script `receiver_ip.py` để nghe nhanh.
+- **mDNS & LED state / mDNS & LED báo:** Truy cập `http://hbq-imu.local`, LED GPIO18 báo các chế độ Wi-Fi/BLE/stream.
 
-- **Real-time Web Interface**: Live data visualization with charts and graphs
-- **Multi-Sensor Support**: Simultaneous monitoring of 4 different IMU sensors
-- **High-Speed Data Collection**: Up to 26.7kHz sampling rate with FIFO buffering
-- **REST API**: JSON endpoints for data access and statistics
-- **Realtime Dashboard**: Web UI nhận dữ liệu trực tiếp từ firmware
-- **Data Export**: CSV and JSON download capabilities
-- **Remote Configuration**: Web-based sensor configuration interface
-- **Performance Monitoring**: Built-in statistics and performance metrics
-- **mDNS Support**: Access via `hbq-imu.local` instead of IP address
-- **LED Status Indicator**: Visual feedback for WiFi and data transmission status
+## Hardware & Requirements / Phần cứng & yêu cầu
 
-## 🎯 Supported Sensors
+- ESP32-C6 dev board, nguồn 5 V USB.
+- Cảm biến IIS2MDC (I2C), IIS3DWB, ICM45686, SCL3300 (SPI). Mặc định dùng GPIO: SDA23, SCL22, MISO2, MOSI7, CLK6, CS{19,20,11}.
+- ESP-IDF ≥ v5.4 đã export môi trường (`. $IDF_PATH/export.sh`).
+- Mạng Wi-Fi 2.4 GHz, BLE central (ví dụ nRF Connect) để test notify.
 
-| Sensor | Type | Max Sample Rate | Features |
-|--------|------|-----------------|----------|
-| IIS2MDC | Magnetometer | 100Hz | Temperature compensation, I2C |
-| IIS3DWB | High-speed Accelerometer | 26.7kHz | FIFO, SPI, Vibration analysis |
-| ICM45686 | 6-axis IMU | 100Hz | APEX features, Gesture recognition |
-| SCL3300 | Inclinometer | 1kHz | CRC protection, 4 modes |
+## Build & Flash / Biên dịch & nạp
 
-## 🚀 Quick Start
-
-[VI] Bắt đầu nhanh
-
-### Prerequisites
-- ESP-IDF v5.4 or later
-- ESP32-C6 development board
-- Required IMU sensors
-- WiFi network access
-
-### Installation
-
-1. **Clone and setup**:
 ```bash
 git clone https://github.com/hbqtechnologycompany/ESP32-C6-Multi-Sensor-IMU-Module.git
-cd ESP32-C6-Multi-Sensor-IMU-Module/ESP32C6_IMU_WebMonitor
+cd ESP32-C6-Multi-Sensor-IMU-Module/ESP32C6_IMU_WebMonitorw
+idf.py set-target esp32c6                   # chọn chip
+idf.py menuconfig                           # tùy chọn (ví dụ cấu hình Flash)
 ```
 
-2. **Configure WiFi**:
-Edit `main/main.c` and update WiFi credentials:
+Chỉnh Wi-Fi trong `main/main.c`:
 ```c
-#define WIFI_SSID      "YOUR_WIFI_SSID"
-#define WIFI_PASS      "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID  "TenWifi"
+#define WIFI_PASS  "MatkhauWifi"
 ```
 
-3. **Build and flash**:
+Sau đó build & flash:
 ```bash
 idf.py build
-idf.py flash monitor
+idf.py -p /dev/ttyUSB0 flash monitor
 ```
+Xem log để lấy IP (`got ip: 192.168.x.x`) và trạng thái BLE.
 
-4. **Access web interface**:
-   - Via mDNS: `http://hbq-imu.local` (recommended)
-   - Via IP address: Check serial monitor for IP (IP có thể thay đổi)
+## Using the firmware / Sử dụng firmware
 
-## 🌐 Web Interface
+### 1. Web dashboard
+- **English:** Open `http://hbq-imu.local` (mDNS) or `http://<device-ip>` in a browser to view live charts, sensor cards, stats, and export buttons.
+- **Tiếng Việt:** Mở trình duyệt tới mDNS hoặc IP để xem biểu đồ realtime, số liệu thống kê và tải CSV/JSON.
 
-[VI] Giao diện Web
+### 2. REST API
+- `GET /api/data` → latest sample.
+- `GET /api/stats` → buffer counters, throughput.
+- `GET /api/download?format=csv|json` → recent ring-buffer snapshot.
 
-### Dashboard Features
-- **Real-time Charts**: Live visualization of active sensors
-- **Multi-sensor Display**: Cards auto-create for each detected sensor driver
-- **Metrics Panel**: Messages received, active sensors, streaming rate
-- **Data Export**: Download recent samples in CSV hoặc JSON
+### 3. BLE streaming
+- **Pairing:** Dùng app nRF Connect, LightBlue hoặc ESPVTool, tìm thiết bị tên `IMU-BLE`.
+- **Enable notify:** Subscribe characteristic `0x2A58`. Mỗi frame chứa header (độ dài, timestamp, mask) + payload dạng TLV (accel, gyro, mag, inclinometer).
+- **Decode:** Xem `main/imu_ble.c` để ánh xạ type ID hoặc reuse client từ dự án BLE streamer.
 
-### API Endpoints
+### 4. UDP IP broadcast helper
+- **Script:** Từ thư mục gốc repo chạy `python3 receiver_ip.py` để in mọi bản tin broadcast 5 s/lần.
+- **Linux CLI:** `nc -ul 12345` (hoặc `socat - UDP4-RECV:12345` nếu muốn xem chi tiết).
+- **Windows:** `python receiver_ip.py` (với Python 3) hoặc `ncat -ul 12345` (khi đã cài Nmap/Ncat).
 
-[VI] API
+## Configuration highlights / Cấu hình nhanh
 
-#### Data Access
-- `GET /api/data` – Trả snapshot giá trị sensor mới nhất
-- `GET /api/stats` – Trả thống kê buffer và thông lượng
-- `GET /api/ip` – Trả địa chỉ IP
-- `GET /api/download?format=csv` – Xuất dữ liệu vòng đệm (CSV)
-- `GET /api/download?format=json` – Xuất dữ liệu vòng đệm (JSON)
+- **Sensor setup:** `main/imu_manager.c` có map chân và cấu hình SPI/I2C. Đổi CS hoặc bus nếu phần cứng khác.
+- **Sampling & buffer:** `imu_manager_set_sampling_rate`, `DATA_BUFFER_SIZE` (trong `data_buffer.h`) và tần số BLE (`imu_ble_config_t` tại `main/main.c`).
+- **LED states:** `LED_STATUS_NO_WIFI` (sáng), `LED_STATUS_WIFI_CONNECTED` (nhấp nháy 0.5 s), data pulse tắt/bật ngắn khi gửi qua BLE/WebSocket.
+- **Tasks:** `imu_task` đọc cảm biến 100 Hz, `web_server_task` phục vụ HTTP/WebSocket, BLE producer phụ trách notify (FreeRTOS core 0).
 
-## 🔧 Configuration
+## Troubleshooting / Khắc phục nhanh
 
-[VI] Cấu hình
+- **Không thấy IP:** chắc chắn đã cấu hình Wi-Fi đúng, xem serial log và thử script `receiver_ip.py` để xác nhận broadcast.
+- **BLE disconnect:** đảm bảo central bật notify, giữ khoảng cách <5 m; nếu frame quá dài có thể giảm `packet_interval_ms` hoặc tắt bớt cảm biến trong `imu_ble_config_t`.
+- **Web UI không load:** kiểm tra SPIFFS đã mount, log `web_server_task`; thử truy cập `/api/data` để so sánh.
+- **Hiệu suất:** theo dõi `esp_get_free_heap_size()` trong log, giảm `DATA_BUFFER_SIZE` hoặc tắt sensor không cần thiết.
 
-### Hardware Configuration
+## License
 
-Update GPIO pins in `main/main.c` if needed:
-
-```c
-// IIS2MDC (I2C)
-#define I2C_MASTER_SDA          23
-#define I2C_MASTER_SCL          22
-
-// IIS3DWB (SPI)
-#define PIN_NUM_MISO_1          2
-#define PIN_NUM_MOSI_1          7
-#define PIN_NUM_CLK_1           6
-#define PIN_NUM_CS_1            19
-
-// ICM45686 (SPI)
-#define PIN_NUM_MISO_2          2
-#define PIN_NUM_MOSI_2          7
-#define PIN_NUM_CLK_2           6
-#define PIN_NUM_CS_2            20
-
-// SCL3300 (SPI)
-#define PIN_NUM_MISO_3          2
-#define PIN_NUM_MOSI_3          7
-#define PIN_NUM_CLK_3           6
-#define PIN_NUM_CS_3            11
-```
-
-### Software Notes
-- Sampling rate mặc định của từng sensor được cấu hình trong `imu_manager.c`.
-- `DATA_BUFFER_SIZE` và chính sách ghi đè cấu hình tại `data_buffer.h`.
-- Có thể tinh chỉnh trực tiếp trong mã và flash lại firmware.
-
-### LED Status Indicator (GPIO 18)
-
-[VI] Đèn LED báo trạng thái (GPIO 18, Active-LOW)
-
-LED trên GPIO 18 hiển thị trạng thái hệ thống:
-
-| Trạng thái | LED Behavior | Mô tả |
-|-----------|--------------|-------|
-| **NO_WIFI** | 🔴 Sáng liên tục | Chưa kết nối WiFi |
-| **WIFI_CONNECTED** | 💚 Chớp 0.5s | Đã có WiFi và mDNS (hbq-imu.local) |
-| **DATA_SENDING** | 🟢 Chớp | Chu kì gửi dữ liệu |
-
-**Chu kỳ hoạt động:**
-1. Boot → LED sáng (đang kết nối WiFi)
-2. WiFi connected → LED chớp 0.5s (sẵn sàng, truy cập http://hbq-imu.local)
-3. Khi gửi dữ liệu → LED sáng ngay khi bắt đầu gửi gói tin
-4. Gửi xong → LED tắt ngay
-5. Lặp lại bước 3-4 theo chu kỳ broadcast (~50Hz)
-
-## 📊 Performance Optimization
-
-[VI] Tối ưu hiệu năng
-
-### High-Speed Data Collection
-- **DMA Usage**: All SPI transactions use DMA
-- **FIFO Management**: Smart watermark configuration
-- **Task Scheduling**: Optimized FreeRTOS task priorities
-- **Memory Management**: Efficient circular buffer implementation
-
-### Web Server Optimization
-- **Chunked Transfer**: REST responses hỗ trợ chunk
-- **Streaming nhẹ**: Dashboard nhận dữ liệu nhỏ gọn cho biểu đồ
-- **Data export**: Bộ nhớ động để tránh lỗi stack khi tải dữ liệu lớn
-
-## 🔍 Monitoring and Debugging
+MIT License © HBQ Technology. Contributions welcome via pull request. | Giấy phép MIT, chấp nhận đóng góp qua PR.
 
 [VI] Giám sát & Gỡ lỗi
 
