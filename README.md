@@ -19,11 +19,15 @@ A comprehensive high-quality IMU measurement system with web-based monitoring ca
 
 - **Multi-Sensor Support**: IIS2MDC (Magnetometer), IIS3DWB (High-speed Accelerometer), ICM45686 (6-axis IMU), SCL3300 (Inclinometer)
 - **High-Speed Data Collection**: Up to 26.7kHz sampling rate
+- **Multiple Firmware Options**: Web monitoring, BLE streaming, high-speed monitoring
+- **Python BLE Dashboard**: Standalone GUI for real-time data visualization
 - **Web-Based Monitoring**: Real-time data visualization and control
+- **BLE 5.0 Streaming**: High-speed data transmission with 2M PHY
 - **FIFO Buffering**: Prevents data loss during high-speed operations
 - **APEX Features**: Advanced motion detection and gesture recognition
 - **Multiple Communication Protocols**: I2C and SPI support
 - **ESP32-C6 Platform**: WiFi 6 and Bluetooth 5.0 connectivity
+- **Standalone Executable**: No Python installation required for dashboard
 
 ## 📊 Sensor Specifications
 
@@ -38,10 +42,21 @@ A comprehensive high-quality IMU measurement system with web-based monitoring ca
 
 [VI] Bắt đầu nhanh
 
+### Available Firmware Options
+
+[VI] Các tùy chọn firmware
+
+1. **ESP32C6_IMU_WebMonitor**: Unified WiFi + BLE monitoring with web interface
+2. **ESP32C6_IMU_BLEStreamer**: BLE-only streaming for mobile/desktop apps
+3. **ESP32C6_IIS3_WebMonitor_HighSpeed**: High-speed web monitoring for IIS3DWB
+4. **Individual Sensor Tests**: Test each sensor separately
+5. **Python BLE Dashboard**: Desktop GUI for BLE data visualization
+
 ### Prerequisites
 - ESP-IDF v5.4 or later
 - ESP32-C6 development board
 - Required sensors (IIS2MDC, IIS3DWB, ICM45686, SCL3300)
+- Python 3.11+ (for BLE dashboard)
 
 ### Installation
 
@@ -61,9 +76,20 @@ git checkout v5.4
 . ./export.sh
 ```
 
-3. **Build and flash**:
+3. **Build and flash** (choose your preferred firmware):
 ```bash
+# For Web-based monitoring (WiFi + BLE)
 cd ESP32C6_IMU_WebMonitor
+idf.py build
+idf.py flash monitor
+
+# For BLE-only streaming
+cd ESP32C6_IMU_BLEStreamer
+idf.py build
+idf.py flash monitor
+
+# For high-speed web monitoring
+cd ESP32C6_IIS3_WebMonitor_HighSpeed
 idf.py build
 idf.py flash monitor
 ```
@@ -74,25 +100,69 @@ idf.py flash monitor
 
 ```
 ESP32-C6-Multi-Sensor-IMU-Module/
-├── ESP32C6_IIS2MDC/          # Magnetometer example
-├── ESP32C6_IIS3DWBTR/        # High-speed accelerometer example
-├── icm45686/                 # 6-axis IMU with APEX features
-├── SCL3300/                  # Inclinometer example
-├── ESP32C6_IMU_WebMonitor/   # Web-based monitoring system
-├── DETAILED_GUIDE.md         # Comprehensive documentation
-└── README.md                 # This file
+├── ESP32C6_IIS2MDC Test/           # Magnetometer test example
+├── ESP32C6_IIS3DWBTR Test/         # High-speed accelerometer test
+├── ESP32C6_IIS3_WebMonitor_HighSpeed/  # High-speed web monitoring
+├── ESP32C6_IMU_BLEStreamer/        # BLE streaming firmware
+├── ESP32C6_IMU_WebMonitor/         # Web-based monitoring system
+├── icm45686 test/                   # 6-axis IMU test with APEX features
+├── SCL3300 Test/                    # Inclinometer test example
+├── ble-imu-dashboard/               # Python GUI for BLE data visualization
+├── docs/                            # Documentation files
+├── Schematic/                       # Hardware schematics
+├── DETAILED_GUIDE.md               # Comprehensive documentation
+├── CONTRIBUTING.md                  # Contribution guidelines
+└── README.md                       # This file
 ```
 
-## 🌐 Web Monitoring Interface
+## 🌐 Monitoring Interfaces
 
-[VI] Giao diện giám sát Web
+[VI] Giao diện giám sát
 
+### Web-based Monitoring
 The web monitoring system provides:
 - **Real-time Data Visualization**: Live charts and graphs
 - **REST API**: JSON endpoints for data access
 - **WebSocket Support**: Real-time data streaming
 - **Configuration Interface**: Remote sensor configuration
 - **Data Export**: CSV and JSON download options
+
+### Python BLE Dashboard
+A standalone Python GUI application for BLE data visualization:
+- **Auto-scan**: Automatic ESP32-C6 device discovery
+- **Real-time Streaming**: BLE NOTIFY data reception
+- **12-plot Grid**: 4 sensors × 3 axes (X/Y/Z) visualization
+- **Light/Dark Themes**: Comfortable viewing experience
+- **Live Statistics**: Frame count and error tracking
+- **Standalone Executable**: No Python installation required
+
+### Using the Python BLE Dashboard
+
+[VI] Sử dụng Python BLE Dashboard
+
+1. **Install Python dependencies**:
+```bash
+cd ble-imu-dashboard
+pip install -r requirements.txt
+```
+
+2. **Run the dashboard**:
+```bash
+# Windows PowerShell
+.\run.ps1
+
+# Windows Batch
+run.bat
+
+# Manual run
+python main.py
+```
+
+3. **Build standalone executable**:
+```bash
+.\build_exe.ps1
+# Output: dist\ESP32-IMU-Dashboard.exe
+```
 
 ### API Endpoints
 
@@ -152,6 +222,23 @@ Update WiFi credentials in `main.c`:
 - Sensor fusion algorithms
 - Machine learning training data
 
+## 🧪 Individual Sensor Testing
+
+[VI] Kiểm tra từng cảm biến
+
+For testing individual sensors or learning sensor-specific implementations:
+
+- **ESP32C6_IIS2MDC Test**: Magnetometer testing and calibration
+- **ESP32C6_IIS3DWBTR Test**: High-speed accelerometer testing
+- **icm45686 test**: 6-axis IMU with APEX features testing
+- **SCL3300 Test**: Inclinometer testing and angle measurement
+
+Each test project includes:
+- Sensor-specific drivers and examples
+- Configuration and calibration routines
+- Basic data logging and visualization
+- Troubleshooting guides
+
 ## 🔧 Troubleshooting
 
 [VI] Xử lý sự cố
@@ -183,9 +270,10 @@ Update WiFi credentials in `main.c`:
 [VI] Tài liệu
 
 - [Detailed Guide](DETAILED_GUIDE.md) - Comprehensive setup and usage guide
-- [API Documentation](docs/API.md) - REST API reference
-- [Hardware Guide](docs/HARDWARE.md) - PCB and wiring information
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
+- [BLE Viewer Guide](docs/BLE_Viewer_Guide.md) - BLE dashboard usage guide
+- [Contributing Guidelines](CONTRIBUTING.md) - How to contribute to the project
+- [Hardware Schematic](Schematic/ESP32_IMU_Module.pdf) - PCB and wiring information
+- [Individual Project READMEs](ESP32C6_IMU_WebMonitor/README.md) - Specific firmware documentation
 
 ## 🤝 Contributing
 
