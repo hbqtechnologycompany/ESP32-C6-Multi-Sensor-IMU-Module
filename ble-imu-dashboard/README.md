@@ -2,6 +2,8 @@
 
 Open-source Python GUI for streaming and visualizing multi-sensor IMU data via BLE from ESP32-C6.
 
+![BLE Dashboard Interface](ui/imgs/ui.png)
+
 ## Features
 - 🔍 **Auto-scan** for ESP32-C6 IMU devices
 - 🔗 **One-click connect** to BLE device
