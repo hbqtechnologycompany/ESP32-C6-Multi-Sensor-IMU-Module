@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>ESP32-C6 IIS3DWB High-Speed Monitor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>ESP32-C6 IIS3DWB High-Speed Monitor</h1>
+      <div class="status">
+        <span id="connectionStatus">Connecting...</span>
+        <span id="deviceIp"></span>
+      </div>
+    </header>
+
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Plot Hz</div>
+        <div class="metric-value" id="metricPps">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Sensor samples/s</div>
+        <div class="metric-value" id="metricSps">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">|g|</div>
+        <div class="metric-value" id="metricMag">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Full-scale</div>
+        <div class="metric-value" id="metricFs">-</div>
+      </div>
+    </div>
+
+    <div class="chart-section">
+        <div class="chart-header">
+          <h2>IIS3DWB Acceleration (g)</h2>
+          <div id="scaleControls" class="scale-controls">
+            <button id="pauseResumeBtn" data-action="pause">Pause</button>
+            <button data-scale="auto">Auto</button>
+            <button data-scale="2">±2g</button>
+            <button data-scale="4">±4g</button>
+            <button data-scale="8">±8g</button>
+            <button data-scale="16">±16g</button>
+          </div>
+        </div>
+      <div class="chart-container">
+        <canvas id="accelChart"></canvas>
+      </div>
+    </div>
+
+    <div class="log-section">
+      <h3>Event Log</h3>
+      <div id="eventLog" class="event-log"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

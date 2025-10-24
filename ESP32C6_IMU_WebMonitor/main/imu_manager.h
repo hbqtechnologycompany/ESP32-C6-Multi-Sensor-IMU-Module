@@ -3,6 +3,7 @@
 
 #include "esp_err.h"
 #include <stdint.h>
+#include <stdbool.h>
 
 // Sensor data structure
 typedef struct {
@@ -64,6 +65,9 @@ esp_err_t imu_manager_deinit(void);
 esp_err_t imu_manager_set_sampling_rate(uint32_t rate_hz);
 esp_err_t imu_manager_set_fifo_watermark(uint16_t watermark);
 esp_err_t imu_manager_enable_sensor(uint8_t sensor_id, bool enable);
+uint32_t imu_manager_get_sampling_rate(void);
+uint16_t imu_manager_get_fifo_watermark(void);
+uint8_t imu_manager_get_enabled_sensors(void);
 
 // Sensor IDs
 #define SENSOR_MAGNETOMETER  0x01

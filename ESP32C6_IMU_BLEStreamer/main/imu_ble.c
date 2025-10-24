@@ -1,89 +1,339 @@
 #include "imu_ble.h"
 #include "ble_stream.h"
+#include "imu_manager.h"
+#include "led_status.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// NOTE: In this standalone example we simulate sensor reads.
-// In integration with your drivers, replace sim_read_* with actual reads.
+#include <math.h>
+#include <limits.h>
+#include <string.h>
 
 static const char *TAG = "IMU_BLE";
-static imu_ble_config_t s_cfg;
+static const uint8_t FRAME_VERSION = 1;
 
-static inline int16_t f2q15(float v, float scale)
+static imu_ble_config_t s_cfg;
+static TaskHandle_t s_producer_task = NULL;
+static uint32_t s_frame_seq = 0;
+static uint32_t s_last_error_log_ms = 0;
+static bool s_connected = false;
+static bool s_notifications_ready = false;
+
+typedef struct __attribute__((packed)) {
+    uint16_t frame_len;
+    uint8_t  version;
+    uint8_t  flags;
+    uint16_t sensor_mask;
+    uint32_t timestamp_us;
+    uint32_t sequence;
+} ble_frame_header_t;
+
+enum {
+    BLE_SENSOR_IIS3_ACCEL = 1 << 0,
+    BLE_SENSOR_ICM_ACCEL  = 1 << 1,
+    BLE_SENSOR_ICM_GYRO   = 1 << 2,
+    BLE_SENSOR_ICM_TEMP   = 1 << 3,
+    BLE_SENSOR_IIS2_MAG   = 1 << 4,
+    BLE_SENSOR_IIS2_TEMP  = 1 << 5,
+    BLE_SENSOR_SCL_ANGLE  = 1 << 6,
+    BLE_SENSOR_SCL_ACCEL  = 1 << 7,
+    BLE_SENSOR_SCL_TEMP   = 1 << 8,
+};
+
+static inline int16_t clamp_i16(int32_t v)
 {
-    float q = v * scale;
-    if (q > 32767.0f) q = 32767.0f;
-    if (q < -32768.0f) q = -32768.0f;
-    return (int16_t)q;
+    if (v > INT16_MAX) return INT16_MAX;
+    if (v < INT16_MIN) return INT16_MIN;
+    return (int16_t)v;
 }
 
-static void pack_and_notify(float ax, float ay, float az,
-                            float gx, float gy, float gz)
+static inline int16_t float_to_scaled_i16(float value, float scale)
 {
-    // Packet format (little-endian): t32us + 6x int16 (acc xyz, gyr xyz) = 4 + 12 = 16 bytes
-    // We can batch multiple frames into a 244B notify payload.
-    static uint8_t buf[244];
-    static uint16_t off = 0;
+    return clamp_i16(lrintf(value * scale));
+}
 
-    uint32_t t = (uint32_t)(esp_timer_get_time());
-    if (off + 16 > sizeof(buf)) {
-        ble_stream_notify(buf, off);
-        off = 0;
-    }
-    memcpy(&buf[off], &t, 4); off += 4;
-    int16_t iax = f2q15(ax, 16384.0f); // ~1g -> 16384 for ±2g
-    int16_t iay = f2q15(ay, 16384.0f);
-    int16_t iaz = f2q15(az, 16384.0f);
-    int16_t igx = f2q15(gx, 131.072f);  // ~1 dps -> 131 for ±250 dps (example)
-    int16_t igy = f2q15(gy, 131.072f);
-    int16_t igz = f2q15(gz, 131.072f);
-    memcpy(&buf[off], &iax, 2); off += 2;
-    memcpy(&buf[off], &iay, 2); off += 2;
-    memcpy(&buf[off], &iaz, 2); off += 2;
-    memcpy(&buf[off], &igx, 2); off += 2;
-    memcpy(&buf[off], &igy, 2); off += 2;
-    memcpy(&buf[off], &igz, 2); off += 2;
+static bool append_u8(uint8_t *buf, size_t *offset, size_t max, uint8_t v)
+{
+    if (*offset + 1 > max) return false;
+    buf[(*offset)++] = v;
+    return true;
+}
 
-    // If nearly full, flush now
-    if (sizeof(buf) - off < 16) {
-        ble_stream_notify(buf, off);
-        off = 0;
+static bool append_i16(uint8_t *buf, size_t *offset, size_t max, int16_t v)
+{
+    if (*offset + sizeof(int16_t) > max) return false;
+    memcpy(&buf[*offset], &v, sizeof(int16_t));
+    *offset += sizeof(int16_t);
+    return true;
+}
+
+static bool append_vec3(uint8_t *buf, size_t *offset, size_t max, uint8_t type, int16_t x, int16_t y, int16_t z)
+{
+    if (!append_u8(buf, offset, max, type)) return false;
+    if (!append_u8(buf, offset, max, 6)) return false;
+    if (!append_i16(buf, offset, max, x)) return false;
+    if (!append_i16(buf, offset, max, y)) return false;
+    if (!append_i16(buf, offset, max, z)) return false;
+    return true;
+}
+
+static bool append_scalar(uint8_t *buf, size_t *offset, size_t max, uint8_t type, int16_t value)
+{
+    if (!append_u8(buf, offset, max, type)) return false;
+    if (!append_u8(buf, offset, max, 2)) return false;
+    if (!append_i16(buf, offset, max, value)) return false;
+    return true;
+}
+
+static size_t build_frame(const imu_data_t *data, uint8_t *out, size_t max_len)
+{
+    if (!data || !out || max_len < sizeof(ble_frame_header_t)) {
+        return 0;
     }
+
+    size_t offset = sizeof(ble_frame_header_t);
+    uint16_t mask = 0;
+
+    if (data->accelerometer.valid && s_cfg.enable_iis3dwb) {
+        int16_t ax = float_to_scaled_i16(data->accelerometer.x_g, 16384.0f); // 1g -> 16384
+        int16_t ay = float_to_scaled_i16(data->accelerometer.y_g, 16384.0f);
+        int16_t az = float_to_scaled_i16(data->accelerometer.z_g, 16384.0f);
+        if (!append_vec3(out, &offset, max_len, 0x01, ax, ay, az)) return 0;
+        mask |= BLE_SENSOR_IIS3_ACCEL;
+    }
+
+    if (data->imu_6axis.valid && s_cfg.enable_icm45686) {
+        int16_t ax = float_to_scaled_i16(data->imu_6axis.accel_x_g, 16384.0f);
+        int16_t ay = float_to_scaled_i16(data->imu_6axis.accel_y_g, 16384.0f);
+        int16_t az = float_to_scaled_i16(data->imu_6axis.accel_z_g, 16384.0f);
+        if (!append_vec3(out, &offset, max_len, 0x10, ax, ay, az)) return 0;
+        mask |= BLE_SENSOR_ICM_ACCEL;
+
+        int16_t gx = float_to_scaled_i16(data->imu_6axis.gyro_x_dps, 131.072f); // 1dps -> 131
+        int16_t gy = float_to_scaled_i16(data->imu_6axis.gyro_y_dps, 131.072f);
+        int16_t gz = float_to_scaled_i16(data->imu_6axis.gyro_z_dps, 131.072f);
+        if (!append_vec3(out, &offset, max_len, 0x11, gx, gy, gz)) return 0;
+        mask |= BLE_SENSOR_ICM_GYRO;
+
+        int16_t temp = float_to_scaled_i16(data->imu_6axis.temperature_c, 100.0f);
+        if (!append_scalar(out, &offset, max_len, 0x12, temp)) return 0;
+        mask |= BLE_SENSOR_ICM_TEMP;
+    }
+
+    if (data->magnetometer.valid && s_cfg.enable_iis2mdc) {
+        int16_t mx = float_to_scaled_i16(data->magnetometer.x_mg, 1.0f);  // already mg
+        int16_t my = float_to_scaled_i16(data->magnetometer.y_mg, 1.0f);
+        int16_t mz = float_to_scaled_i16(data->magnetometer.z_mg, 1.0f);
+        if (!append_vec3(out, &offset, max_len, 0x20, mx, my, mz)) return 0;
+        mask |= BLE_SENSOR_IIS2_MAG;
+
+        int16_t temp = float_to_scaled_i16(data->magnetometer.temperature_c, 100.0f);
+        if (!append_scalar(out, &offset, max_len, 0x21, temp)) return 0;
+        mask |= BLE_SENSOR_IIS2_TEMP;
+    }
+
+    if (data->inclinometer.valid && s_cfg.enable_scl3300) {
+        int16_t ang_x = float_to_scaled_i16(data->inclinometer.angle_x_deg, 100.0f);
+        int16_t ang_y = float_to_scaled_i16(data->inclinometer.angle_y_deg, 100.0f);
+        int16_t ang_z = float_to_scaled_i16(data->inclinometer.angle_z_deg, 100.0f);
+        if (!append_vec3(out, &offset, max_len, 0x30, ang_x, ang_y, ang_z)) return 0;
+        mask |= BLE_SENSOR_SCL_ANGLE;
+
+        int16_t acc_x = float_to_scaled_i16(data->inclinometer.accel_x_g, 16384.0f);
+        int16_t acc_y = float_to_scaled_i16(data->inclinometer.accel_y_g, 16384.0f);
+        int16_t acc_z = float_to_scaled_i16(data->inclinometer.accel_z_g, 16384.0f);
+        if (!append_vec3(out, &offset, max_len, 0x31, acc_x, acc_y, acc_z)) return 0;
+        mask |= BLE_SENSOR_SCL_ACCEL;
+
+        int16_t temp = float_to_scaled_i16(data->inclinometer.temperature_c, 100.0f);
+        if (!append_scalar(out, &offset, max_len, 0x32, temp)) return 0;
+        mask |= BLE_SENSOR_SCL_TEMP;
+    }
+
+    if (mask == 0) {
+        return 0;
+    }
+
+    ble_frame_header_t header = {
+        .frame_len = (uint16_t)offset,
+        .version = FRAME_VERSION,
+        .flags = 0,
+        .sensor_mask = mask,
+        .timestamp_us = (uint32_t)(data->timestamp_us & 0xFFFFFFFF),
+        .sequence = s_frame_seq++,
+    };
+    memcpy(out, &header, sizeof(header));
+
+    return offset;
+}
+
+static void log_error_throttled(const char *context, esp_err_t err)
+{
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    if (now_ms - s_last_error_log_ms > 1000U) {
+        ESP_LOGW(TAG, "%s: %s", context, esp_err_to_name(err));
+        s_last_error_log_ms = now_ms;
+    }
+}
+
+static void request_stream_restart(void)
+{
+    s_frame_seq = 0;
+    s_last_error_log_ms = 0;
 }
 
 static void producer_task(void *arg)
 {
     const TickType_t period = pdMS_TO_TICKS(s_cfg.packet_interval_ms);
     TickType_t last = xTaskGetTickCount();
-    ESP_LOGI(TAG, "Producer started: interval=%ums", (unsigned)s_cfg.packet_interval_ms);
 
-    // Simulate: replace with actual sensor reads at configured ODRs
-    float t = 0.0f;
-    while (1) {
-        // Example waveform
-        float ax = 0.0f + 0.1f * sinf(t);
-        float ay = 0.0f + 0.1f * cosf(t);
-        float az = 1.0f; // gravity
-        float gx = 0.5f * sinf(t*0.5f);
-        float gy = 0.3f * cosf(t*0.4f);
-        float gz = 0.0f;
-        t += 0.1f;
+    ESP_LOGI(TAG, "Producer started (interval=%ums)", (unsigned)s_cfg.packet_interval_ms);
 
-        pack_and_notify(ax, ay, az, gx, gy, gz);
+    imu_data_t sample;
+    uint8_t frame[244];
+
+    while (true) {
+        if (!s_connected || !s_notifications_ready) {
+            vTaskDelayUntil(&last, period);
+            continue;
+        }
+
+        esp_err_t ret = imu_manager_read_all(&sample);
+        if (ret == ESP_OK) {
+            size_t len = build_frame(&sample, frame, sizeof(frame));
+            if (len > 0) {
+                led_on();
+                esp_err_t ble_ret = ble_stream_notify(frame, (uint16_t)len);
+                led_off();
+
+                if (ble_ret != ESP_OK && ble_ret != ESP_ERR_INVALID_STATE) {
+                    log_error_throttled("BLE notify failed", ble_ret);
+                }
+            }
+        } else {
+            log_error_throttled("Sensor read failed", ret);
+        }
+
         vTaskDelayUntil(&last, period);
+    }
+}
+
+static esp_err_t configure_sensors(void)
+{
+    // Adjust sampling rate before init so that icm45686 uses requested ODR.
+    if (s_cfg.icm45686_odr_hz) {
+        esp_err_t rc = imu_manager_set_sampling_rate(s_cfg.icm45686_odr_hz);
+        if (rc != ESP_OK) {
+            return rc;
+        }
+    }
+
+    esp_err_t ret = imu_manager_init();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (!s_cfg.enable_iis2mdc) {
+        ret = imu_manager_enable_sensor(SENSOR_MAGNETOMETER, false);
+        if (ret != ESP_OK) return ret;
+    }
+    if (!s_cfg.enable_iis3dwb) {
+        ret = imu_manager_enable_sensor(SENSOR_ACCELEROMETER, false);
+        if (ret != ESP_OK) return ret;
+    }
+    if (!s_cfg.enable_icm45686) {
+        ret = imu_manager_enable_sensor(SENSOR_IMU_6AXIS, false);
+        if (ret != ESP_OK) return ret;
+    }
+    if (!s_cfg.enable_scl3300) {
+        ret = imu_manager_enable_sensor(SENSOR_INCLINOMETER, false);
+        if (ret != ESP_OK) return ret;
+    }
+
+    ESP_LOGI(TAG, "Sensors configured: MAG=%d IIS3DWB=%d ICM=%d SCL=%d",
+             s_cfg.enable_iis2mdc, s_cfg.enable_iis3dwb,
+             s_cfg.enable_icm45686, s_cfg.enable_scl3300);
+    return ESP_OK;
+}
+
+void imu_ble_on_ble_connect(void)
+{
+    s_connected = true;
+    led_start_blink();  // Start blinking when connected
+    ESP_LOGI(TAG, "Central connected");
+}
+
+void imu_ble_on_ble_disconnect(void)
+{
+    s_connected = false;
+    s_notifications_ready = false;
+    request_stream_restart();
+    led_stop_blink();
+    led_on();  // Solid ON when disconnected
+    ESP_LOGI(TAG, "Central disconnected");
+}
+
+void imu_ble_on_notifications_changed(bool enabled)
+{
+    s_notifications_ready = enabled;
+    if (enabled) {
+        request_stream_restart();
+        led_stop_blink();  // Stop blinking, let producer task control LED
+        led_off();  // Start with LED off
+        ESP_LOGI(TAG, "Notifications enabled, streaming resumes");
+    } else {
+        led_start_blink();  // Resume blinking when not streaming
+        ESP_LOGI(TAG, "Notifications disabled, streaming paused");
     }
 }
 
 esp_err_t imu_ble_init(const imu_ble_config_t *cfg)
 {
-    if (!cfg) return ESP_ERR_INVALID_ARG;
-    s_cfg = *cfg;
+    if (!cfg || cfg->packet_interval_ms == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Validate minimum interval for FreeRTOS stability
+    if (cfg->packet_interval_ms < 10) {
+        ESP_LOGW(TAG, "packet_interval_ms=%u too low, using minimum 10ms", cfg->packet_interval_ms);
+        s_cfg = *cfg;
+        s_cfg.packet_interval_ms = 10;
+    } else {
+        s_cfg = *cfg;
+    }
+    
+    if (s_producer_task) {
+        ESP_LOGW(TAG, "imu_ble already initialised");
+        return ESP_OK;
+    }
 
-    // In real integration: initialize actual sensors with BLE-friendly ODRs here
-    // Example: set IIS3DWB ODR to s_cfg.iis3dwb_odr_hz, etc.
+    s_connected = false;
+    s_notifications_ready = false;
+    request_stream_restart();
 
-    xTaskCreatePinnedToCore(producer_task, "imu_ble_producer", 4096, NULL, 5, NULL, 0);
+    esp_err_t ret = configure_sensors();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure sensors: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    BaseType_t task_ok = xTaskCreatePinnedToCore(
+        producer_task,
+        "imu_ble_producer",
+        4096,
+        NULL,
+        5,
+        &s_producer_task,
+        0
+    );
+
+    if (task_ok != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create producer task");
+        imu_manager_deinit();
+        return ESP_ERR_NO_MEM;
+    }
+
     return ESP_OK;
 }

@@ -1,3 +1,30 @@
-idf_component_register(SRCS "main.c" "ble_stream.c" "imu_ble.c"
-                    INCLUDE_DIRS "."
-                    REQUIRES bt nvs_flash esp_timer driver)
+idf_component_register(
+    SRCS
+        "main.c"
+        "ble_stream.c"
+        "imu_ble.c"
+        "imu_manager.c"
+        "led_status.c"
+        "sensors/iis2mdc.c"
+        "sensors/iis3dwb.c"
+        "sensors/icm45686.c"
+        "sensors/scl3300.c"
+        "imu/inv_imu_driver.c"
+        "imu/inv_imu_driver_advanced.c"
+        "imu/inv_imu_driver_aux1.c"
+        "imu/inv_imu_transport.c"
+        "imu/inv_imu_selftest.c"
+        "imu/inv_imu_i2cm.c"
+        "imu/inv_imu_edmp.c"
+        "imu/inv_imu_edmp_compass.c"
+        "imu/inv_imu_edmp_wearable.c"
+    INCLUDE_DIRS
+        "."
+        "sensors"
+        "imu"
+    REQUIRES
+        bt
+        nvs_flash
+        esp_timer
+        driver
+)

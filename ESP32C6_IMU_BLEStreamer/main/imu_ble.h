@@ -16,5 +16,8 @@ typedef struct {
 } imu_ble_config_t;
 
 esp_err_t imu_ble_init(const imu_ble_config_t *cfg);
+void imu_ble_on_ble_connect(void);
+void imu_ble_on_ble_disconnect(void);
+void imu_ble_on_notifications_changed(bool enabled);
 
 #endif // IMU_BLE_H

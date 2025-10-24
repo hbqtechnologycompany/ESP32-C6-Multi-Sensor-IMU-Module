@@ -1,0 +1,40 @@
+/* Dark theme for BLE IMU Dashboard */
+
+QMainWindow {
+    background-color: #1e1e1e;
+}
+
+QPushButton {
+    background-color: #0e639c;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+QPushButton:hover {
+    background-color: #1177bb;
+}
+
+QPushButton:pressed {
+    background-color: #0d5a8f;
+}
+
+QLabel {
+    color: #cccccc;
+    font-size: 12px;
+}
+
+QListWidget {
+    background-color: #252526;
+    color: #cccccc;
+    border: 1px solid #3e3e42;
+}
+
+QComboBox {
+    background-color: #252526;
+    color: #cccccc;
+    border: 1px solid #3e3e42;
+    padding: 4px;
+}

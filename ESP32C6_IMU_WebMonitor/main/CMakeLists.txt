@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" 
+idf_component_register(SRCS "led_status.c" "main.c" 
                               "web_server.c" 
                               "imu_manager.c"
                               "data_buffer.c"
@@ -6,5 +6,15 @@ idf_component_register(SRCS "main.c"
                               "sensors/iis3dwb.c" 
                               "sensors/icm45686.c"
                               "sensors/scl3300.c"
-                    INCLUDE_DIRS "." "sensors"
-                    REQUIRES esp_http_server esp_wifi nvs_flash spiffs)
+                              # ICM-45686 driver files
+                              "imu/inv_imu_driver.c"
+                              "imu/inv_imu_driver_advanced.c"
+                              "imu/inv_imu_driver_aux1.c"
+                              "imu/inv_imu_transport.c"
+                              "imu/inv_imu_selftest.c"
+                              "imu/inv_imu_i2cm.c"
+                              "imu/inv_imu_edmp.c"
+                              "imu/inv_imu_edmp_compass.c"
+                              "imu/inv_imu_edmp_wearable.c"
+                    INCLUDE_DIRS "." "sensors" "imu"
+                    REQUIRES esp_http_server esp_wifi nvs_flash spiffs json driver esp_timer espressif__mdns)

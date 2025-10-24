@@ -113,7 +113,7 @@ The web monitoring system provides:
 |--------|---------|---------|----|----|
 | IIS2MDC | GPIO23 | GPIO22 | - | - |
 | IIS3DWB | GPIO7 | GPIO6 | GPIO19 | - |
-| ICM45686 | GPIO23 | GPIO18 | GPIO5 | GPIO4 |
+| ICM45686 | GPIO7 | GPIO6 | GPIO5 | - |
 | SCL3300 | GPIO7 | GPIO6 | GPIO20 | - |
 
 ### WiFi Configuration

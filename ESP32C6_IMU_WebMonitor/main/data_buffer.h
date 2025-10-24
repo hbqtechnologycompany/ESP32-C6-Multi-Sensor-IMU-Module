@@ -4,6 +4,7 @@
 #include "esp_err.h"
 #include "imu_manager.h"
 #include <stdint.h>
+#include <stdbool.h>
 
 // Buffer configuration
 #define DATA_BUFFER_SIZE 1000  // Number of samples to keep in buffer
@@ -33,5 +34,7 @@ bool data_buffer_is_empty(void);
 // JSON export functions
 esp_err_t data_buffer_export_json(char *json_buffer, size_t buffer_size, uint32_t max_samples);
 esp_err_t data_buffer_export_csv(char *csv_buffer, size_t buffer_size, uint32_t max_samples);
+esp_err_t data_buffer_export_json_dynamic(char **out_buf, size_t *out_len, uint32_t max_samples);
+esp_err_t data_buffer_export_csv_dynamic(char **out_buf, size_t *out_len, uint32_t max_samples);
 
 #endif // DATA_BUFFER_H

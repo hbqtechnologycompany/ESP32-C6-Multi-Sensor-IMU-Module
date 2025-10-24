@@ -6,6 +6,7 @@
 #include "esp_bt.h"
 #include "ble_stream.h"
 #include "imu_ble.h"
+#include "led_status.h"
 
 static const char *TAG = "BLE_MAIN";
 
@@ -20,6 +21,8 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Starting BLE IMU streamer");
 
+    ESP_ERROR_CHECK(led_status_init());
+
     // Init BLE stack
     ESP_ERROR_CHECK(ble_stream_init());
 
@@ -29,9 +32,9 @@ void app_main(void)
         .enable_iis3dwb = true,
         .enable_icm45686 = true,
         .enable_scl3300 = true,
-        .iis3dwb_odr_hz = 800,      // reduced for BLE bandwidth
+        .iis3dwb_odr_hz = 800,
         .icm45686_odr_hz = 400,
-        .packet_interval_ms = 20    // ~50 Hz notify bursts
+        .packet_interval_ms = 20    // ~50 Hz notify bursts (min: 10ms for BLE stability)
     };
     ESP_ERROR_CHECK(imu_ble_init(&cfg));
 

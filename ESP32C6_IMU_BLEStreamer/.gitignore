@@ -1,0 +1,27 @@
+# ESP-IDF Build artifacts
+build/
+dependencies.lock
+managed_components/
+*.bin
+*.elf
+*.map
+
+# SDK config
+sdkconfig.old
+sdkconfig.defaults.backup
+
+# Python
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+*.tmp
+*.swp
+*~

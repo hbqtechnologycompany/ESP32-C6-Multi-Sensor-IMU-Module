@@ -5,6 +5,7 @@
 #include "sensors/scl3300.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "driver/spi_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -20,7 +21,7 @@ static scl3300_t inclinometer_sensor;
 // Configuration
 static uint32_t sampling_rate_hz = 100;
 static uint16_t fifo_watermark = 32;
-static uint8_t enabled_sensors = 0xFF; // All sensors enabled by default
+static uint8_t enabled_sensors = 0x00; // Start with all sensors disabled, enable after successful init
 
 // Synchronization
 static SemaphoreHandle_t sensor_mutex = NULL;
@@ -31,25 +32,21 @@ static SemaphoreHandle_t sensor_mutex = NULL;
 #define I2C_MASTER_SCL          22
 #define I2C_MASTER_CLK_SPEED    400000
 
+// All SPI sensors share the same bus (SPI2_HOST) with same MISO/MOSI/CLK
 #define SPI_HOST_1              SPI2_HOST
-#define SPI_HOST_2              SPI3_HOST
+#define SPI_HOST_2              SPI2_HOST
 #define SPI_HOST_3              SPI2_HOST
 
-#define PIN_NUM_MISO_1          2
-#define PIN_NUM_MOSI_1          7
-#define PIN_NUM_CLK_1           6
-#define PIN_NUM_CS_1            19
+// Shared SPI pins (MISO, MOSI, CLK must be same for all devices on same bus)
+#define PIN_NUM_MISO            2
+#define PIN_NUM_MOSI            7
+#define PIN_NUM_CLK             6
 
-#define PIN_NUM_MISO_2          19
-#define PIN_NUM_MOSI_2          23
-#define PIN_NUM_CLK_2           18
-#define PIN_NUM_CS_2            5
-#define PIN_NUM_INT_2           4
-
-#define PIN_NUM_MISO_3          2
-#define PIN_NUM_MOSI_3          7
-#define PIN_NUM_CLK_3           6
-#define PIN_NUM_CS_3            20
+// Individual CS pins for each sensor
+#define PIN_NUM_CS_IIS3DWB      19      // IIS3DWB Accelerometer
+#define PIN_NUM_CS_ICM45686     20      // ICM45686 IMU 6-axis
+#define PIN_NUM_CS_SCL3300      11      // SCL3300 Inclinometer
+// #define PIN_NUM_INT_ICM45686    4       // ICM45686 Interrupt pin (optional, use GPIO_NUM_NC to disable)
 
 #define SPI_CLOCK_HZ            6000000
 
@@ -66,84 +63,90 @@ esp_err_t imu_manager_init(void)
     
     esp_err_t ret = ESP_OK;
     
+    // Initialize SPI bus (shared by all SPI sensors)
+    spi_bus_config_t buscfg = {
+        .miso_io_num = PIN_NUM_MISO,
+        .mosi_io_num = PIN_NUM_MOSI,
+        .sclk_io_num = PIN_NUM_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096,
+    };
+    
+    ret = spi_bus_initialize(SPI_HOST_1, &buscfg, SPI_DMA_CH_AUTO);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "SPI bus initialized successfully (MISO=%d, MOSI=%d, CLK=%d)", 
+             PIN_NUM_MISO, PIN_NUM_MOSI, PIN_NUM_CLK);
+    
     // Initialize IIS2MDC (Magnetometer)
-    if (enabled_sensors & SENSOR_MAGNETOMETER) {
-        ret = iis2mdc_init(&mag_sensor, I2C_MASTER_BUS, I2C_MASTER_SDA, 
-                          I2C_MASTER_SCL, I2C_MASTER_CLK_SPEED);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to initialize IIS2MDC: %s", esp_err_to_name(ret));
-            enabled_sensors &= ~SENSOR_MAGNETOMETER;
-        } else {
-            ESP_LOGI(TAG, "IIS2MDC initialized successfully");
-        }
+    ret = iis2mdc_init(&mag_sensor, I2C_MASTER_BUS, I2C_MASTER_SDA, 
+                      I2C_MASTER_SCL, I2C_MASTER_CLK_SPEED);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "IIS2MDC not detected: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "IIS2MDC initialized successfully");
+        enabled_sensors |= SENSOR_MAGNETOMETER;
     }
     
     // Initialize IIS3DWB (Accelerometer)
-    if (enabled_sensors & SENSOR_ACCELEROMETER) {
-        ret = iis3dwb_init_spi(&accel_sensor, SPI_HOST_1, PIN_NUM_CS_1);
+    ret = iis3dwb_init_spi(&accel_sensor, SPI_HOST_1, PIN_NUM_CS_IIS3DWB);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "IIS3DWB SPI init skipped: %s", esp_err_to_name(ret));
+    } else {
+        ret = iis3dwb_device_init(&accel_sensor);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to initialize IIS3DWB: %s", esp_err_to_name(ret));
-            enabled_sensors &= ~SENSOR_ACCELEROMETER;
+            ESP_LOGW(TAG, "IIS3DWB device init failed: %s", esp_err_to_name(ret));
         } else {
-            ret = iis3dwb_device_init(&accel_sensor);
+            ret = iis3dwb_configure(&accel_sensor, IIS3DWB_FS_2G, IIS3DWB_ODR_26K7HZ);
             if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to init IIS3DWB device: %s", esp_err_to_name(ret));
-                enabled_sensors &= ~SENSOR_ACCELEROMETER;
+                ESP_LOGW(TAG, "IIS3DWB configuration failed: %s", esp_err_to_name(ret));
             } else {
-                ret = iis3dwb_configure(&accel_sensor, IIS3DWB_FS_2G, IIS3DWB_ODR_26K7HZ);
+                ret = iis3dwb_fifo_config(&accel_sensor, fifo_watermark, 0x06);
                 if (ret != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to configure IIS3DWB: %s", esp_err_to_name(ret));
-                    enabled_sensors &= ~SENSOR_ACCELEROMETER;
+                    ESP_LOGW(TAG, "IIS3DWB FIFO configuration failed: %s", esp_err_to_name(ret));
                 } else {
-                    ret = iis3dwb_fifo_config(&accel_sensor, fifo_watermark, 0x06);
-                    if (ret != ESP_OK) {
-                        ESP_LOGE(TAG, "Failed to config IIS3DWB FIFO: %s", esp_err_to_name(ret));
-                        enabled_sensors &= ~SENSOR_ACCELEROMETER;
-                    } else {
-                        ESP_LOGI(TAG, "IIS3DWB initialized successfully");
-                    }
+                    ESP_LOGI(TAG, "IIS3DWB initialized successfully");
+                    enabled_sensors |= SENSOR_ACCELEROMETER;
                 }
             }
         }
     }
     
     // Initialize ICM45686 (IMU 6-axis)
-    if (enabled_sensors & SENSOR_IMU_6AXIS) {
-        ret = icm456xx_init_spi(&imu_6axis_sensor, SPI_HOST_2, PIN_NUM_CS_2, SPI_CLOCK_HZ);
+    ret = icm456xx_init_spi(&imu_6axis_sensor, SPI_HOST_2, PIN_NUM_CS_ICM45686, SPI_CLOCK_HZ);
+    if (ret != 0) {
+        ESP_LOGW(TAG, "ICM45686 not detected: %d", ret);
+    } else {
+        ret = icm456xx_begin(&imu_6axis_sensor);
         if (ret != 0) {
-            ESP_LOGE(TAG, "Failed to initialize ICM45686: %d", ret);
-            enabled_sensors &= ~SENSOR_IMU_6AXIS;
+            ESP_LOGW(TAG, "ICM45686 begin failed: %d", ret);
         } else {
-            ret = icm456xx_begin(&imu_6axis_sensor);
-            if (ret != 0) {
-                ESP_LOGE(TAG, "Failed to begin ICM45686: %d", ret);
-                enabled_sensors &= ~SENSOR_IMU_6AXIS;
-            } else {
-                icm456xx_start_accel(&imu_6axis_sensor, sampling_rate_hz, 16);
-                icm456xx_start_gyro(&imu_6axis_sensor, sampling_rate_hz, 2000);
-                ret = icm456xx_enable_fifo_interrupt(&imu_6axis_sensor, -1, NULL, fifo_watermark);
-                if (ret != 0) {
-                    ESP_LOGW(TAG, "ICM45686 FIFO interrupt setup returned %d", ret);
-                }
-                ESP_LOGI(TAG, "ICM45686 initialized successfully");
-            }
+            icm456xx_start_accel(&imu_6axis_sensor, sampling_rate_hz, 16);
+            icm456xx_start_gyro(&imu_6axis_sensor, sampling_rate_hz, 2000);
+            // Disable FIFO interrupt for now (pass GPIO_NUM_NC = -1 is causing error)
+            // ret = icm456xx_enable_fifo_interrupt(&imu_6axis_sensor, PIN_NUM_INT_ICM45686, NULL, fifo_watermark);
+            // if (ret != 0) {
+            //     ESP_LOGW(TAG, "ICM45686 FIFO interrupt setup returned %d", ret);
+            // }
+            ESP_LOGI(TAG, "ICM45686 initialized successfully");
+            enabled_sensors |= SENSOR_IMU_6AXIS;
         }
     }
     
     // Initialize SCL3300 (Inclinometer)
-    if (enabled_sensors & SENSOR_INCLINOMETER) {
-        ret = scl3300_init(SPI_HOST_3, PIN_NUM_CS_3, &inclinometer_sensor);
+    ret = scl3300_init(SPI_HOST_3, PIN_NUM_CS_SCL3300, &inclinometer_sensor);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SCL3300 not detected: %s", esp_err_to_name(ret));
+    } else {
+        ret = scl3300_set_mode(&inclinometer_sensor, 1); // Mode 1 for high accuracy
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to initialize SCL3300: %s", esp_err_to_name(ret));
-            enabled_sensors &= ~SENSOR_INCLINOMETER;
+            ESP_LOGW(TAG, "SCL3300 mode configuration failed: %s", esp_err_to_name(ret));
         } else {
-            ret = scl3300_set_mode(&inclinometer_sensor, 1); // Mode 1 for high accuracy
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to set SCL3300 mode: %s", esp_err_to_name(ret));
-                enabled_sensors &= ~SENSOR_INCLINOMETER;
-            } else {
-                ESP_LOGI(TAG, "SCL3300 initialized successfully");
-            }
+            ESP_LOGI(TAG, "SCL3300 initialized successfully");
+            enabled_sensors |= SENSOR_INCLINOMETER;
         }
     }
     
@@ -222,18 +225,15 @@ esp_err_t imu_manager_read_accelerometer(imu_data_t *data)
         return ESP_ERR_NOT_SUPPORTED;
     }
     
-    // Read from FIFO for high-speed data
-    uint8_t fifo_buf[fifo_watermark * 7];
-    float ax[fifo_watermark], ay[fifo_watermark], az[fifo_watermark];
+    float ax = 0.0f;
+    float ay = 0.0f;
+    float az = 0.0f;
     
-    esp_err_t ret = iis3dwb_fifo_read_burst(&accel_sensor, fifo_buf, fifo_watermark);
+    esp_err_t ret = iis3dwb_read_accel(&accel_sensor, &ax, &ay, &az);
     if (ret == ESP_OK) {
-        iis3dwb_convert_raw_to_g(fifo_buf, fifo_watermark, ax, ay, az);
-        
-        // Use the latest sample
-        data->accelerometer.x_g = ax[fifo_watermark - 1];
-        data->accelerometer.y_g = ay[fifo_watermark - 1];
-        data->accelerometer.z_g = az[fifo_watermark - 1];
+        data->accelerometer.x_g = ax;
+        data->accelerometer.y_g = ay;
+        data->accelerometer.z_g = az;
         data->accelerometer.valid = true;
     } else {
         data->accelerometer.valid = false;
@@ -258,16 +258,16 @@ esp_err_t imu_manager_read_imu_6axis(imu_data_t *data)
         const float accel_scale = 16.0f / 32768.0f;  // ±16g
         const float gyro_scale = 2000.0f / 32768.0f; // ±2000dps
         
-        data->imu_6axis.accel_x_g = sensor_data.accel_raw[0] * accel_scale;
-        data->imu_6axis.accel_y_g = sensor_data.accel_raw[1] * accel_scale;
-        data->imu_6axis.accel_z_g = sensor_data.accel_raw[2] * accel_scale;
+        data->imu_6axis.accel_x_g = sensor_data.accel_data[0] * accel_scale;
+        data->imu_6axis.accel_y_g = sensor_data.accel_data[1] * accel_scale;
+        data->imu_6axis.accel_z_g = sensor_data.accel_data[2] * accel_scale;
         
-        data->imu_6axis.gyro_x_dps = sensor_data.gyro_raw[0] * gyro_scale;
-        data->imu_6axis.gyro_y_dps = sensor_data.gyro_raw[1] * gyro_scale;
-        data->imu_6axis.gyro_z_dps = sensor_data.gyro_raw[2] * gyro_scale;
+        data->imu_6axis.gyro_x_dps = sensor_data.gyro_data[0] * gyro_scale;
+        data->imu_6axis.gyro_y_dps = sensor_data.gyro_data[1] * gyro_scale;
+        data->imu_6axis.gyro_z_dps = sensor_data.gyro_data[2] * gyro_scale;
         
         // Temperature conversion (assuming 8-bit temp)
-        data->imu_6axis.temperature_c = sensor_data.temp_raw + 25.0f;
+        data->imu_6axis.temperature_c = sensor_data.temp_data + 25.0f;
         
         data->imu_6axis.valid = true;
         return ESP_OK;
@@ -324,9 +324,24 @@ esp_err_t imu_manager_enable_sensor(uint8_t sensor_id, bool enable)
     } else {
         enabled_sensors &= ~sensor_id;
     }
-    
+
     ESP_LOGI(TAG, "Sensor 0x%02X %s", sensor_id, enable ? "enabled" : "disabled");
     return ESP_OK;
+}
+
+uint32_t imu_manager_get_sampling_rate(void)
+{
+    return sampling_rate_hz;
+}
+
+uint16_t imu_manager_get_fifo_watermark(void)
+{
+    return fifo_watermark;
+}
+
+uint8_t imu_manager_get_enabled_sensors(void)
+{
+    return enabled_sensors;
 }
 
 esp_err_t imu_manager_deinit(void)

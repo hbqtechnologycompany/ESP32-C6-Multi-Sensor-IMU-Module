@@ -6,6 +6,8 @@
 #include "freertos/semphr.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include "esp_timer.h"
 
 static const char *TAG = "DATA_BUFFER";
 
@@ -131,12 +133,16 @@ esp_err_t data_buffer_get_latest(imu_data_t *data)
         return ESP_ERR_TIMEOUT;
     }
     
+    // Buffer is empty only when count is 0 AND not full
+    // If full=true, buffer has DATA_BUFFER_SIZE valid samples
     if (buffer.count == 0 && !buffer.full) {
         xSemaphoreGive(buffer_mutex);
         return ESP_ERR_NOT_FOUND;
     }
     
     // Get the most recent data
+    // When full, head points to next write position, so last valid is head-1
+    // When not full, head-1 is also the last written
     uint32_t latest_idx = (buffer.head - 1 + DATA_BUFFER_SIZE) % DATA_BUFFER_SIZE;
     *data = buffer.data[latest_idx];
     
@@ -416,4 +422,78 @@ esp_err_t data_buffer_export_csv(char *csv_buffer, size_t buffer_size, uint32_t 
     
     xSemaphoreGive(buffer_mutex);
     return ESP_OK;
+}
+
+esp_err_t data_buffer_export_csv_dynamic(char **out_buf, size_t *out_len, uint32_t max_samples) {
+    if (!out_buf || !out_len) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_buf = NULL;
+    *out_len = 0;
+    size_t capacity = 8192;
+    char *buffer = malloc(capacity);
+    if (!buffer) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t ret = data_buffer_export_csv(buffer, capacity, max_samples);
+    if (ret == ESP_ERR_NO_MEM) {
+        size_t new_capacity = capacity * 2;
+        while (new_capacity < capacity * 8) {
+            char *new_buf = realloc(buffer, new_capacity);
+            if (!new_buf) {
+                free(buffer);
+                return ESP_ERR_NO_MEM;
+            }
+            buffer = new_buf;
+            ret = data_buffer_export_csv(buffer, new_capacity, max_samples);
+            if (ret != ESP_ERR_NO_MEM) {
+                break;
+            }
+            new_capacity *= 2;
+        }
+    }
+    if (ret == ESP_OK) {
+        *out_buf = buffer;
+        *out_len = strlen(buffer);
+        return ESP_OK;
+    }
+    free(buffer);
+    return ret;
+}
+
+esp_err_t data_buffer_export_json_dynamic(char **out_buf, size_t *out_len, uint32_t max_samples) {
+    if (!out_buf || !out_len) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_buf = NULL;
+    *out_len = 0;
+    size_t capacity = 8192;
+    char *buffer = malloc(capacity);
+    if (!buffer) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t ret = data_buffer_export_json(buffer, capacity, max_samples);
+    if (ret == ESP_ERR_NO_MEM) {
+        size_t new_capacity = capacity * 2;
+        while (new_capacity < capacity * 8) {
+            char *new_buf = realloc(buffer, new_capacity);
+            if (!new_buf) {
+                free(buffer);
+                return ESP_ERR_NO_MEM;
+            }
+            buffer = new_buf;
+            ret = data_buffer_export_json(buffer, new_capacity, max_samples);
+            if (ret != ESP_ERR_NO_MEM) {
+                break;
+            }
+            new_capacity *= 2;
+        }
+    }
+    if (ret == ESP_OK) {
+        *out_buf = buffer;
+        *out_len = strlen(buffer);
+        return ESP_OK;
+    }
+    free(buffer);
+    return ret;
 }

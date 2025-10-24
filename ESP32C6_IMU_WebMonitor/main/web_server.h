@@ -20,6 +20,7 @@
 #define API_STATS_PATH "/api/stats"
 #define API_CONFIG_PATH "/api/config"
 #define API_DOWNLOAD_PATH "/api/download"
+#define API_IP_PATH "/api/ip"
 
 // WebSocket endpoints
 #define WS_DATA_PATH "/ws/data"

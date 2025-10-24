@@ -35,10 +35,6 @@ void app_main(void)
     ESP_ERROR_CHECK(iis3dwb_init_spi(&dev, SPI2_HOST, PIN_NUM_CS));
     ESP_ERROR_CHECK(iis3dwb_device_init(&dev));
     ESP_ERROR_CHECK(iis3dwb_configure(&dev, IIS3DWB_FS_2G, IIS3DWB_ODR_26K7HZ));
-    // Verify WHO_AM_I
-    uint8_t who=0; 
-    (void)iis3dwb_read_reg(&dev, IIS3DWB_WHO_AM_I_REG, &who, 1);
-    ESP_LOGI(TAG, "IIS3DWB WHO_AM_I=0x%02X (expect 0x7B)", who);
     
     // Cấu hình FIFO với watermark và chế độ
     uint8_t mode = 0x06; // Chế độ continuous
@@ -61,10 +57,7 @@ void app_main(void)
             if (fifo_level >= FIFO_WATERMARK) {
                 if (iis3dwb_fifo_read_burst(&dev, fifo_buf, FIFO_WATERMARK) == ESP_OK) {
                     iis3dwb_convert_raw_to_g(fifo_buf, FIFO_WATERMARK, ax, ay, az);
-                    // Integrate velocity (demo)
                     iis3dwb_velocity_integrate(&vx, &vy, &vz, ax, ay, az, FIFO_WATERMARK, DELTA_T_S);
-                    // Log latest accel sample for quick sensor check
-                    ESP_LOGI(TAG, "Accel[g] X=%.3f Y=%.3f Z=%.3f", ax[FIFO_WATERMARK-1], ay[FIFO_WATERMARK-1], az[FIFO_WATERMARK-1]);
                 } else {
                     ESP_LOGE(TAG, "Failed to read FIFO data");
                 }
