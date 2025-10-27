@@ -12,6 +12,8 @@
 
 A comprehensive high-quality IMU measurement system with web-based monitoring capabilities, featuring multiple sensors for various applications.
 ![ESP32-C6-Multi-Sensor-IMU-Module](https://github.com/user-attachments/assets/25552b5a-b936-4bbb-9c8f-0b7d65bbd243)
+![C6-IMU](https://github.com/user-attachments/assets/96d515bc-60be-45b8-ae22-685ebdb23fad)
+
 
 ## 🎯 Features
 
@@ -307,8 +309,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Address: 31, Đường số 8, Cityland Garden Hill, P. An Nhơn, TP HCM
 
 ### Support the Project
-- **PayPal Donate**: [Donate via PayPal](https://paypal.me/hbqtechnology)
-- **GitHub Sponsors**: [Support on GitHub](https://github.com/sponsors/hbqtechnologycompany)
+- PayPal Donate: [![PayPal Donate](https://img.shields.io/badge/PayPal-Donate-0070ba?logo=paypal&logoColor=white)](https://paypal.me/hbqtechnology)
+- GitHub Sponsors : [![GitHub Sponsors](https://img.shields.io/badge/GitHub-Sponsors-ea4aaa?logo=github&logoColor=white)](https://github.com/sponsors/hbqtechnologycompany)
 
 ## 🙏 Acknowledgments
 
